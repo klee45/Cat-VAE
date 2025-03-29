@@ -1,0 +1,23 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.9.34622.214
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{888888A0-9F3D-457C-B088-3A5042F75D52}") = "CatGenerator", "CatGenerator\CatGenerator.pyproj", "{3DB516F1-00BF-4AF2-8F91-35A23DFB656B}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{3DB516F1-00BF-4AF2-8F91-35A23DFB656B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3DB516F1-00BF-4AF2-8F91-35A23DFB656B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {387951C8-0E7A-4B92-BD9B-CCC2313A4496}
+	EndGlobalSection
+EndGlobal
