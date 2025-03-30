@@ -1,8 +1,10 @@
 
 #%matplotlib inline
 import argparse
+from ast import Num
 from msilib.schema import DuplicateFile
 import os
+import itertools
 import random
 import torch
 import torch.nn as nn
@@ -16,87 +18,203 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 
-class GAN:
+parser = argparse.ArgumentParser()
+parser.add_argument("--num_epochs", type=int, default=5, help="number of epochs of training")
+parser.add_argument("--batch_size", type=int, default=128, help="size of the batches")
+parser.add_argument("--img_size", type=int, default=128, help="size of each image dimension")
+parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
+parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
+parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
+parser.add_argument("--num_gpus", type=int, default=1, help="number of gpu threads to use")
+parser.add_argument("--latent_size", type=int, default=100, help="size of the latent vector i.e. size of generator input")
+parser.add_argument("--num_channels", type=int, default=3, help="number of image channels")
+parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
+parser.add_argument("--workers", type=int, default=2, help="number of dataloader workers")
+parser.add_argument("--feature_maps_generator", type=int, default=64, help="number of feature maps in the generator")
+parser.add_argument("--feature_maps_discriminator", type=int, default=64, help="number of feature maps in the discriminator")
+parser.add_argument("--persp1", type=float, default=0.2, help="perspective distortion")
+parser.add_argument("--persp2", type=float, default=0.5, help="perspective chance")
+opt = parser.parse_args()
 
+img_shape = (opt.num_channels, opt.img_size, opt.img_size)
+
+class Encoder(nn.Module):
     def __init__(self):
-        # Set random seed for reproducibility
-        manualSeed = 1
-        random.seed(manualSeed)
-        torch.manual_seed(manualSeed)
-        torch.use_deterministic_algorithms(True) # Needed for reproducible results
+        super(Encoder, self).__init__()
         
-        # Number of workers for dataloader
-        self.workers = 2
+        self.main = nn.Sequential(
+            nn.Conv2d(opt.num_channels,
+                      256,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(256,
+                      128,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(128,
+                      64,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64,
+                      opt.latent_size,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Sigmoid()
+        )
 
-        # Batch size during training
-        self.batch_size = 128
-
-        # Spatial size of training images. All images will be resized to this
-        #   size using a transformer.
-        self.image_size = 128
-
-        # Number of channels in the training images. For color images this is 3
-        self.num_color_channels = 3
-
-        # Size of z latent vector (i.e. size of generator input)
-        self.num_latent_vector = 100
-
-        # Size of feature maps in generator
-        self.num_feature_maps_generator = 64
-
-        # Size of feature maps in discriminator
-        self.num_feature_maps_discriminator = 64
-
-        # Number of training epochs
-        self.num_epochs = 5
-
-        # Learning rate for optimizers
-        self.lr = 0.0002
-
-        # Beta1 hyperparameter for Adam optimizers
-        self.beta1 = 0.5
-
-        # Number of GPUs available. Use 0 for CPU mode.
-        self.num_gpus = 1
+    def forward(self, input_data):
+        return self.main(input_data)
         
-        # Random Perspective parameters
-        self.persp = (0.2, 1.0)
-
-    def get_dataset(self, url):
-        dataset = datasets.ImageFolder(root=url,
-                                       transform=tf.Compose([
-                                           tf.RandomPerspective(distortion_scale=self.persp[0], p=self.persp[1]),
-                                           tf.Resize(self.image_size),
-                                           tf.CenterCrop(self.image_size),
-                                           tf.ToTensor(),
-                                           tf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
-                                       ]))
-        dataloader = torch.utils.data.DataLoader(dataset, batch_size=self.batch_size, shuffle=True, num_workers=self.workers)
-        device = torch.device("cuda:0" if (torch.cuda.is_available() and self.num_gpus > 0) else "cpu")
+class Decoder(nn.Module):
+    def __init__(self):
+        super(Decoder, self).__init__()
         
-        real_batch = next(iter(dataloader))
-        plt.figure(figsize=(8,8))
-        plt.axis("off")
-        plt.imshow(np.transpose(torchutils.make_grid(real_batch[0].to(device)[:64], padding=2, normalize=True).cpu(),(1,2,0)))
-        plt.show()
+        self.main = nn.Sequential(
+            nn.ConvTranspose2d(opt.latent_size,
+                               64,
+                               kernel_size=5,
+                               stride=2,
+                               padding=3,
+                               output_padding=1),
+            nn.ReLU(),            
+            nn.ConvTranspose2d(64,
+                               128,
+                               kernel_size=5,
+                               stride=2,
+                               padding=1,
+                               output_padding=2),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128,
+                               256,
+                               kernel_size=5,
+                               stride=2,
+                               padding=1,
+                               output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(256,
+                               3,
+                               kernel_size=3,
+                               stride=2,
+                               padding=2,
+                               output_padding=1),            
+            nn.Sigmoid()
+        )
         
-    def weights_init(self, m):
-        nn.init.normal_(m.weight.data, 1.0, 0.02)
-        nn.init.constant_(m.bias.data, 0)
-        
-class Generator(nn.Module):
-    pass
-
-class Discriminator(nn.Module):
-    pass
-
-def main():
-    gan = GAN()
-    gan.get_dataset("Data")
-    gan.weights_init()
+    def forward(self, input_data):
+        return self.main(input_data)
     
+class Discriminator(nn.Module):
+    def __init__(self, item_count):
+        super(Discriminator, self).__init__()
 
+        self.main = nn.Sequential(
+            nn.Conv2d(opt.num_channels,
+                      1,
+                      kernel_size=3,
+                      stride=2,
+                      padding=1),
+            nn.Sigmoid()
+        )
+            
+    def forward(self, input_data):
+        return self.main(input_data)
 
+def main():    
+    print("Setup")
+    cuda = True if torch.cuda.is_available() else False
+    
+    # Set random seed for reproducibility
+    manualSeed = 1
+    random.seed(manualSeed)
+    torch.manual_seed(manualSeed)
+    torch.use_deterministic_algorithms(True) # Needed for reproducible results
+
+    # Data loading
+    dataset = datasets.ImageFolder(root="Test",
+                                    transform=tf.Compose([
+                                        tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
+                                        tf.Resize(opt.img_size),
+                                        tf.CenterCrop(opt.img_size),
+                                        tf.ToTensor(),
+                                        tf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                                    ]))
+    dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
+      
+    '''
+    real_batch = next(iter(dataloader))
+    plt.figure(figsize=(8,8))
+    plt.axis("off")
+    plt.imshow(np.transpose(torchutils.make_grid(real_batch[0].to(self.device)[:64], padding=2, normalize=True).cpu(),(1,2,0)))
+    plt.show()
+    '''
+        
+    # Neural net
+    encoder = Encoder()
+    decoder = Decoder()
+    discriminator = Discriminator(len(dataloader))
+    
+    # Use binary cross-entropy loss
+    adversarial_loss = torch.nn.BCELoss()
+    pixelwise_loss = torch.nn.L1Loss()
+    
+    if cuda:
+        encoder.cuda()
+        decoder.cuda()
+        discriminator.cuda()
+        adversarial_loss.cuda()
+        pixelwise_loss.cuda()
+    
+    # Optimizers
+    optimizer_G = torch.optim.Adam(
+        itertools.chain(encoder.parameters(), decoder.parameters()), lr=opt.lr, betas=(opt.b1, opt.b2)
+    )
+    optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))    
+
+    # Training
+    img_list = []
+    g_losses = []
+    d_losses = []
+    iters = 0
+
+    print("Training")
+    for epoch in range(opt.num_epochs):
+        for i, (imgs, _) in enumerate(dataloader):
+            imgs = imgs.cuda()
+            print(imgs.size())
+
+            # Adversarial ground truths
+            valid = torch.cuda.FloatTensor(imgs.shape[0], 1).fill_(1.0).cuda()
+            fake = torch.cuda.FloatTensor(imgs.shape[0], 1).fill_(0.0).cuda()
+
+            # Configure input
+            real_imgs = imgs.type(torch.cuda.FloatTensor).cuda()
+
+            optimizer_G.zero_grad()
+
+            encoded_imgs = encoder(real_imgs)
+            decoded_imgs = decoder(encoded_imgs)
+            
+            score = discriminator(decoded_imgs)
+            score = torch.mean(score, 3)
+            score = torch.mean(score, 2)
+
+            # Loss measures generator's ability to fool the discriminator
+            g_loss = 0.001 * adversarial_loss(score, valid) + 0.999 * pixelwise_loss(
+                decoded_imgs, real_imgs
+            )
+
+            g_loss.backward()
+            optimizer_G.step()
+
+    print("Done")
 
 if __name__ == '__main__':
     main()
