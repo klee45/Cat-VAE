@@ -82,29 +82,29 @@ class Decoder(nn.Module):
                                64,
                                kernel_size=5,
                                stride=2,
-                               padding=3,
+                               padding=2,
                                output_padding=1),
             nn.ReLU(),            
             nn.ConvTranspose2d(64,
                                128,
                                kernel_size=5,
                                stride=2,
-                               padding=1,
-                               output_padding=2),
+                               padding=2,
+                               output_padding=1),
             nn.ReLU(),
             nn.ConvTranspose2d(128,
                                256,
                                kernel_size=5,
                                stride=2,
-                               padding=1,
+                               padding=2,
                                output_padding=1),
             nn.ReLU(),
             nn.ConvTranspose2d(256,
                                3,
-                               kernel_size=3,
+                               kernel_size=5,
                                stride=2,
                                padding=2,
-                               output_padding=1),            
+                               output_padding=1),
             nn.Sigmoid()
         )
         
@@ -126,6 +126,11 @@ class Discriminator(nn.Module):
             
     def forward(self, input_data):
         return self.main(input_data)
+    
+def sample_image(decoder, batches_done):
+    z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size)))
+    gen_imgs = decoder(z)
+    pass
 
 def main():    
     print("Setup")
@@ -187,22 +192,23 @@ def main():
     print("Training")
     for epoch in range(opt.num_epochs):
         for i, (imgs, _) in enumerate(dataloader):
-            imgs = imgs.cuda()
-            print(imgs.size())
-
+            # --------------- Setup ----------------------
             # Adversarial ground truths
             valid = torch.cuda.FloatTensor(imgs.shape[0], 1).fill_(1.0).cuda()
             fake = torch.cuda.FloatTensor(imgs.shape[0], 1).fill_(0.0).cuda()
 
             # Configure input
             real_imgs = imgs.type(torch.cuda.FloatTensor).cuda()
+            
 
+            # ------------- Training Autoencoder -------------
             optimizer_G.zero_grad()
 
             encoded_imgs = encoder(real_imgs)
             decoded_imgs = decoder(encoded_imgs)
             
             score = discriminator(decoded_imgs)
+            # Average the score over full image
             score = torch.mean(score, 3)
             score = torch.mean(score, 2)
 
@@ -213,6 +219,32 @@ def main():
 
             g_loss.backward()
             optimizer_G.step()
+
+
+            # -------------- Training Discriminator -----------------
+            optimizer_D.zero_grad()
+
+            # Sample noise as discriminator ground truth
+            z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_size)))
+
+            # Measure discriminator's ability to classify real from generated samples
+            real_loss = adversarial_loss(discriminator(z), valid)
+            fake_loss = adversarial_loss(discriminator(encoded_imgs.detach()), fake)
+            d_loss = 0.5 * (real_loss + fake_loss)
+
+            d_loss.backward()
+            optimizer_D.step()
+
+
+            # ----------------------- Display results ------------------------
+            print(
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
+                % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+            )
+
+            batches_done = epoch * len(dataloader) + i
+            if batches_done % opt.sample_interval == 0:
+                sample_image(n_row=10, batches_done=batches_done)
 
     print("Done")
 
