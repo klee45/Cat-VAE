@@ -17,11 +17,12 @@ import torchvision.utils as torchutils
 import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
+from torchvision.utils import save_image
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--num_epochs", type=int, default=5, help="number of epochs of training")
+parser.add_argument("--num_epochs", type=int, default=100, help="number of epochs of training")
 parser.add_argument("--batch_size", type=int, default=128, help="size of the batches")
-parser.add_argument("--img_size", type=int, default=128, help="size of each image dimension")
+parser.add_argument("--image_size", type=int, default=128, help="size of each image dimension")
 parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rate")
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
@@ -36,7 +37,7 @@ parser.add_argument("--persp1", type=float, default=0.2, help="perspective disto
 parser.add_argument("--persp2", type=float, default=0.5, help="perspective chance")
 opt = parser.parse_args()
 
-img_shape = (opt.num_channels, opt.img_size, opt.img_size)
+img_shape = (opt.num_channels, opt.image_size, opt.image_size)
 
 class Encoder(nn.Module):
     def __init__(self):
@@ -71,6 +72,7 @@ class Encoder(nn.Module):
         )
 
     def forward(self, input_data):
+        # Expects (batch_size, 3, image_size, image_size)
         return self.main(input_data)
         
 class Decoder(nn.Module):
@@ -109,6 +111,7 @@ class Decoder(nn.Module):
         )
         
     def forward(self, input_data):
+        # Expects (batch_size, latent_size, 8, 8)
         return self.main(input_data)
     
 class Discriminator(nn.Module):
@@ -125,12 +128,16 @@ class Discriminator(nn.Module):
         )
             
     def forward(self, input_data):
+        # Expects (batch_size, 3, image_size, image_size)
         return self.main(input_data)
     
+def get_average(tensor):
+    return torch.mean(torch.mean(tensor, 3), 2)
+    
 def sample_image(decoder, batches_done):
-    z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size)))
+    z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size, 8, 8)))
     gen_imgs = decoder(z)
-    pass
+    save_image(gen_imgs.data, "Images/%d.png" % batches_done, nrow=10, normalize=True)
 
 def main():    
     print("Setup")
@@ -143,11 +150,11 @@ def main():
     torch.use_deterministic_algorithms(True) # Needed for reproducible results
 
     # Data loading
-    dataset = datasets.ImageFolder(root="Test",
+    dataset = datasets.ImageFolder(root="Data",
                                     transform=tf.Compose([
                                         tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
-                                        tf.Resize(opt.img_size),
-                                        tf.CenterCrop(opt.img_size),
+                                        tf.Resize(opt.image_size),
+                                        tf.CenterCrop(opt.image_size),
                                         tf.ToTensor(),
                                         tf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                                     ]))
@@ -184,10 +191,8 @@ def main():
     optimizer_D = torch.optim.Adam(discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))    
 
     # Training
-    img_list = []
     g_losses = []
     d_losses = []
-    iters = 0
 
     print("Training")
     for epoch in range(opt.num_epochs):
@@ -207,10 +212,7 @@ def main():
             encoded_imgs = encoder(real_imgs)
             decoded_imgs = decoder(encoded_imgs)
             
-            score = discriminator(decoded_imgs)
-            # Average the score over full image
-            score = torch.mean(score, 3)
-            score = torch.mean(score, 2)
+            score = get_average(discriminator(decoded_imgs))
 
             # Loss measures generator's ability to fool the discriminator
             g_loss = 0.001 * adversarial_loss(score, valid) + 0.999 * pixelwise_loss(
@@ -219,34 +221,44 @@ def main():
 
             g_loss.backward()
             optimizer_G.step()
+            g_losses.append(g_loss.item())
 
 
             # -------------- Training Discriminator -----------------
             optimizer_D.zero_grad()
 
             # Sample noise as discriminator ground truth
-            z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], opt.latent_size)))
+            z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], opt.num_channels, opt.image_size, opt.image_size)))
 
             # Measure discriminator's ability to classify real from generated samples
-            real_loss = adversarial_loss(discriminator(z), valid)
-            fake_loss = adversarial_loss(discriminator(encoded_imgs.detach()), fake)
+            real_loss = adversarial_loss(get_average(discriminator(z)), valid)
+            fake_loss = adversarial_loss(get_average(discriminator(decoded_imgs.detach())), fake)
             d_loss = 0.5 * (real_loss + fake_loss)
 
             d_loss.backward()
             optimizer_D.step()
+            d_losses.append(d_loss.item())
 
 
             # ----------------------- Display results ------------------------
             print(
                 "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                % (epoch, opt.n_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+                % (epoch, opt.num_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
             )
 
             batches_done = epoch * len(dataloader) + i
             if batches_done % opt.sample_interval == 0:
-                sample_image(n_row=10, batches_done=batches_done)
+                sample_image(decoder, batches_done)
 
     print("Done")
+    plt.figure(figsize=(10,5))
+    plt.title("Generator and Discriminator Loss During Training")
+    plt.plot(g_losses,label="G")
+    plt.plot(d_losses,label="D")
+    plt.xlabel("iterations")
+    plt.ylabel("Loss")
+    plt.legend()
+    plt.show()
 
 if __name__ == '__main__':
     main()
