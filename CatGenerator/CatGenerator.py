@@ -29,7 +29,7 @@ parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of firs
 parser.add_argument("--num_gpus", type=int, default=1, help="number of gpu threads to use")
 parser.add_argument("--latent_size", type=int, default=100, help="size of the latent vector i.e. size of generator input")
 parser.add_argument("--num_channels", type=int, default=3, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=400, help="interval between image sampling")
+parser.add_argument("--sample_interval", type=int, default=200, help="interval between image sampling")
 parser.add_argument("--workers", type=int, default=2, help="number of dataloader workers")
 parser.add_argument("--feature_maps_generator", type=int, default=64, help="number of feature maps in the generator")
 parser.add_argument("--feature_maps_discriminator", type=int, default=64, help="number of feature maps in the discriminator")
@@ -67,8 +67,7 @@ class Encoder(nn.Module):
                       kernel_size=5,
                       stride=2,
                       padding=2),
-            nn.ReLU(),
-            nn.Sigmoid()
+            nn.ReLU()
         )
 
     def forward(self, input_data):
@@ -134,10 +133,17 @@ class Discriminator(nn.Module):
 def get_average(tensor):
     return torch.mean(torch.mean(tensor, 3), 2)
     
-def sample_image(decoder, batches_done):
+def sample_images(decoder, batches_done):
     z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size, 8, 8)))
     gen_imgs = decoder(z)
-    save_image(gen_imgs.data, "Images/%d.png" % batches_done, nrow=10, normalize=True)
+    save_image(gen_imgs.data, "Generated_Images/%d.png" % batches_done, nrow=10, normalize=True)
+    
+def sample_autoencoder_images(imgs, pos):
+    plt.figure(figsize=(8,8))
+    plt.axis("off")
+    plt.imshow(np.transpose(torchutils.make_grid(imgs.cuda()[:64], padding=2, normalize=True).cpu(),(1,2,0)))
+    plt.savefig("Autoencoder_Images/"+str(pos)+".png")
+
 
 def main():    
     print("Setup")
@@ -150,13 +156,13 @@ def main():
     torch.use_deterministic_algorithms(True) # Needed for reproducible results
 
     # Data loading
-    dataset = datasets.ImageFolder(root="Data",
+    dataset = datasets.ImageFolder(root="Data/Full",
                                     transform=tf.Compose([
-                                        tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
+                                        #tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
                                         tf.Resize(opt.image_size),
                                         tf.CenterCrop(opt.image_size),
                                         tf.ToTensor(),
-                                        tf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
+                                        #tf.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5))
                                     ]))
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
       
@@ -214,6 +220,8 @@ def main():
             
             score = get_average(discriminator(decoded_imgs))
 
+            pos = (epoch * len(dataloader) + i)
+
             # Loss measures generator's ability to fool the discriminator
             g_loss = 0.001 * adversarial_loss(score, valid) + 0.999 * pixelwise_loss(
                 decoded_imgs, real_imgs
@@ -248,7 +256,10 @@ def main():
 
             batches_done = epoch * len(dataloader) + i
             if batches_done % opt.sample_interval == 0:
-                sample_image(decoder, batches_done)
+                # Save noise->decoder images
+                sample_images(decoder, batches_done)
+                # Sample true->autoencoder images
+                sample_autoencoder_images(decoded_imgs, batches_done)
 
     print("Done")
     plt.figure(figsize=(10,5))
