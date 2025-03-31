@@ -32,10 +32,9 @@ parser.add_argument("--latent_size", type=int, default=50, help="size of the lat
 parser.add_argument("--num_channels", type=int, default=3, help="number of image channels")
 parser.add_argument("--sample_interval", type=int, default=100, help="interval between image sampling")
 parser.add_argument("--workers", type=int, default=2, help="number of dataloader workers")
-parser.add_argument("--feature_maps_generator", type=int, default=64, help="number of feature maps in the generator")
-parser.add_argument("--feature_maps_discriminator", type=int, default=64, help="number of feature maps in the discriminator")
 parser.add_argument("--persp1", type=float, default=0.2, help="perspective distortion")
 parser.add_argument("--persp2", type=float, default=0.5, help="perspective chance")
+parser.add_argument("--discriminator_layer_size", type=int, default=64, help="The size of the linear layers in the discriminator")
 opt = parser.parse_args()
 
 img_shape = (opt.num_channels, opt.image_size, opt.image_size)
@@ -43,7 +42,7 @@ img_shape = (opt.num_channels, opt.image_size, opt.image_size)
 class Encoder(nn.Module):
     def __init__(self):
         super(Encoder, self).__init__()
-        
+
         self.main = nn.Sequential(
             nn.Conv2d(opt.num_channels,
                       256,
@@ -71,7 +70,8 @@ class Encoder(nn.Module):
             nn.ReLU(),
             nn.Flatten(),
             nn.Linear(32 * 8 * 8, opt.latent_size),
-            nn.ReLU()
+            nn.ReLU(),
+            nn.BatchNorm1d(opt.latent_size),
     )
 
     def forward(self, input_data):
@@ -128,27 +128,46 @@ class Discriminator(nn.Module):
 
         self.main = nn.Sequential(
             nn.Conv2d(opt.num_channels,
-                      1,
-                      kernel_size=3,
+                      256,
+                      kernel_size=5,
                       stride=2,
-                      padding=1),
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(256,
+                      128,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(128,
+                      64,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Conv2d(64,
+                      32,
+                      kernel_size=5,
+                      stride=2,
+                      padding=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(32 * 8 * 8, opt.discriminator_layer_size),
+            nn.Dropout(),
+            nn.ReLU(),
+            nn.Linear(opt.discriminator_layer_size, 1),
             nn.Sigmoid()
         )
             
     def forward(self, input_data):
         # Expects (batch_size, 3, image_size, image_size)
         return self.main(input_data)
+        
+def sample_images(imgs, epoch_num):
+    save_image(imgs.data, "Results/Generated_Images/%d.png" % epoch_num, nrow=5, normalize=True)
     
-def get_average(tensor):
-    return torch.mean(torch.mean(tensor, 3), 2)
-    
-def sample_images(decoder, batches_done):
-    z = torch.cuda.FloatTensor(np.random.normal(0.5, 0.25, (25, opt.latent_size)))
-    gen_imgs = decoder(z)
-    save_image(gen_imgs.data, "Results/Generated_Images/%d.png" % batches_done, nrow=5, normalize=True)
-    
-def sample_autoencoder_images(imgs, pos):
-    save_image(imgs[:25].data, "Results/Autoencoder_Images/%d.png" % pos, nrow=5, normalize=True)
+def sample_autoencoder_images(imgs, epoch_num):
+    save_image(imgs[:25].data, "Results/Autoencoder_Images/%d.png" % epoch_num, nrow=5, normalize=True)
 
 
 def main():    
@@ -211,6 +230,7 @@ def main():
     print("Training")
     for epoch in range(opt.num_epochs):
         for i, (imgs, _) in enumerate(dataloader):
+            imgs = imgs.cuda()
             # --------------- Setup ----------------------
             # Adversarial ground truths
             valid = torch.cuda.FloatTensor(imgs.shape[0], 1).fill_(1.0).cuda()
@@ -226,7 +246,7 @@ def main():
             encoded_imgs = encoder(real_imgs)
             decoded_imgs = decoder(encoded_imgs)
             
-            score = get_average(discriminator(decoded_imgs))
+            score = discriminator(decoded_imgs)
 
             pos = (epoch * len(dataloader) + i)
 
@@ -243,13 +263,16 @@ def main():
             # -------------- Training Discriminator -----------------
             optimizer_D.zero_grad()
 
-            # Sample noise as discriminator ground truth
-            z = torch.cuda.FloatTensor(np.random.normal(0, 1, (imgs.shape[0], opt.num_channels, opt.image_size, opt.image_size)))
-
             # Measure discriminator's ability to classify real from generated samples
-            real_loss = adversarial_loss(get_average(discriminator(z)), valid)
-            fake_loss = adversarial_loss(get_average(discriminator(decoded_imgs.detach())), fake)
+            d_real_imgs = discriminator(imgs)
+            d_fake_imgs = discriminator(decoded_imgs.detach())
+            real_loss = adversarial_loss(d_real_imgs, valid)
+            fake_loss = adversarial_loss(d_fake_imgs, fake)
             d_loss = 0.5 * (real_loss + fake_loss)
+            
+            d_num_real = np.round(d_real_imgs.cpu().detach().numpy())
+            d_num_fake = np.round(d_fake_imgs.cpu().detach().numpy())
+            d_percent_correct = (np.sum(d_num_real) + np.sum(d_num_fake)) / (len(d_num_real) + len(d_num_fake))
 
             d_loss.backward()
             optimizer_D.step()
@@ -258,16 +281,17 @@ def main():
 
             # ----------------------- Display results ------------------------
             print(
-                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f]"
-                % (epoch, opt.num_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
+                "[Epoch %d/%d] [Batch %d/%d] [D loss: %f] [G loss: %f] [D percent correct: %f]"
+                % (epoch, opt.num_epochs, i, len(dataloader), d_loss.item(), g_loss.item(), d_percent_correct)
             )
 
-        if (epoch % 5 == 0):
-            batches_done = epoch * len(dataloader)
-            # Save noise->decoder images
-            sample_images(decoder, batches_done)
-            # Sample true->autoencoder images
-            sample_autoencoder_images(decoded_imgs, batches_done)
+            # Get the second-last batch (to get a full batch)
+            if (epoch % 5 == 0 and i == len(dataloader) - 2):
+                # Save noise->decoder images
+                z = torch.cuda.FloatTensor(np.random.normal(0, 1, (25, opt.latent_size)))
+                sample_images(decoder(z), epoch)
+                # Sample true->autoencoder images
+                sample_autoencoder_images(decoded_imgs, epoch)
 
     print("Done")
     plt.figure(figsize=(10,5))
