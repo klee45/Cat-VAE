@@ -8,6 +8,7 @@ import itertools
 import random
 import torch
 import torch.nn as nn
+from torch.nn.modules import linear
 import torch.nn.parallel
 import torch.optim as optim
 import torch.utils.data
@@ -27,9 +28,9 @@ parser.add_argument("--lr", type=float, default=0.0002, help="adam: learning rat
 parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
 parser.add_argument("--num_gpus", type=int, default=1, help="number of gpu threads to use")
-parser.add_argument("--latent_size", type=int, default=100, help="size of the latent vector i.e. size of generator input")
+parser.add_argument("--latent_size", type=int, default=50, help="size of the latent vector i.e. size of generator input")
 parser.add_argument("--num_channels", type=int, default=3, help="number of image channels")
-parser.add_argument("--sample_interval", type=int, default=200, help="interval between image sampling")
+parser.add_argument("--sample_interval", type=int, default=100, help="interval between image sampling")
 parser.add_argument("--workers", type=int, default=2, help="number of dataloader workers")
 parser.add_argument("--feature_maps_generator", type=int, default=64, help="number of feature maps in the generator")
 parser.add_argument("--feature_maps_discriminator", type=int, default=64, help="number of feature maps in the discriminator")
@@ -63,23 +64,31 @@ class Encoder(nn.Module):
                       padding=2),
             nn.ReLU(),
             nn.Conv2d(64,
-                      opt.latent_size,
+                      32,
                       kernel_size=5,
                       stride=2,
                       padding=2),
+            nn.ReLU(),
+            nn.Flatten(),
+            nn.Linear(32 * 8 * 8, opt.latent_size),
             nn.ReLU()
-        )
+    )
 
     def forward(self, input_data):
         # Expects (batch_size, 3, image_size, image_size)
         return self.main(input_data)
+        
+        return x;
         
 class Decoder(nn.Module):
     def __init__(self):
         super(Decoder, self).__init__()
         
         self.main = nn.Sequential(
-            nn.ConvTranspose2d(opt.latent_size,
+            nn.Linear(opt.latent_size, 32 * 8 * 8),
+            nn.ReLU(),
+            nn.Unflatten(1, (32, 8, 8)),
+            nn.ConvTranspose2d(32,
                                64,
                                kernel_size=5,
                                stride=2,
@@ -134,24 +143,26 @@ def get_average(tensor):
     return torch.mean(torch.mean(tensor, 3), 2)
     
 def sample_images(decoder, batches_done):
-    z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size, 8, 8)))
+    z = torch.cuda.FloatTensor(np.random.normal(0.5, 0.25, (25, opt.latent_size)))
     gen_imgs = decoder(z)
-    save_image(gen_imgs.data, "Results/Generated_Images/%d.png" % batches_done, nrow=10, normalize=True)
+    save_image(gen_imgs.data, "Results/Generated_Images/%d.png" % batches_done, nrow=5, normalize=True)
     
 def sample_autoencoder_images(imgs, pos):
-    save_image(imgs.data, "Results/Autoencoder_Images/%d.png" % pos, nrow=10, normalize=True)
+    save_image(imgs[:25].data, "Results/Autoencoder_Images/%d.png" % pos, nrow=5, normalize=True)
 
 
 def main():    
     print("Setup")
     cuda = True if torch.cuda.is_available() else False
     
+    '''
     # Set random seed for reproducibility
     manualSeed = 1
     random.seed(manualSeed)
     torch.manual_seed(manualSeed)
     torch.use_deterministic_algorithms(True) # Needed for reproducible results
-
+    '''
+    
     # Data loading
     dataset = datasets.ImageFolder(root="Data/Full",
                                     transform=tf.Compose([
@@ -219,10 +230,10 @@ def main():
 
             pos = (epoch * len(dataloader) + i)
 
+            ads_loss = adversarial_loss(score, valid)
+            pix_loss = pixelwise_loss(decoded_imgs, real_imgs)
             # Loss measures generator's ability to fool the discriminator
-            g_loss = 0.001 * adversarial_loss(score, valid) + 0.999 * pixelwise_loss(
-                decoded_imgs, real_imgs
-            )
+            g_loss = 0.001 * ads_loss + 0.999 * pix_loss
 
             g_loss.backward()
             optimizer_G.step()
@@ -251,12 +262,12 @@ def main():
                 % (epoch, opt.num_epochs, i, len(dataloader), d_loss.item(), g_loss.item())
             )
 
-            batches_done = epoch * len(dataloader) + i
-            if batches_done % opt.sample_interval == 0:
-                # Save noise->decoder images
-                sample_images(decoder, batches_done)
-                # Sample true->autoencoder images
-                sample_autoencoder_images(decoded_imgs, batches_done)
+        if (epoch % 5 == 0):
+            batches_done = epoch * len(dataloader)
+            # Save noise->decoder images
+            sample_images(decoder, batches_done)
+            # Sample true->autoencoder images
+            sample_autoencoder_images(decoded_imgs, batches_done)
 
     print("Done")
     plt.figure(figsize=(10,5))
