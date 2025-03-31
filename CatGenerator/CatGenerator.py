@@ -136,13 +136,10 @@ def get_average(tensor):
 def sample_images(decoder, batches_done):
     z = torch.cuda.FloatTensor(np.random.normal(0, 1, (10, opt.latent_size, 8, 8)))
     gen_imgs = decoder(z)
-    save_image(gen_imgs.data, "Generated_Images/%d.png" % batches_done, nrow=10, normalize=True)
+    save_image(gen_imgs.data, "Results/Generated_Images/%d.png" % batches_done, nrow=10, normalize=True)
     
 def sample_autoencoder_images(imgs, pos):
-    plt.figure(figsize=(8,8))
-    plt.axis("off")
-    plt.imshow(np.transpose(torchutils.make_grid(imgs.cuda()[:64], padding=2, normalize=True).cpu(),(1,2,0)))
-    plt.savefig("Autoencoder_Images/"+str(pos)+".png")
+    save_image(imgs.data, "Results/Autoencoder_Images/%d.png" % pos, nrow=10, normalize=True)
 
 
 def main():    
