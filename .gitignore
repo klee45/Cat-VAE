@@ -363,3 +363,4 @@ MigrationBackup/
 FodyWeavers.xsd
 /CatGenerator/Results/Autoencoder_Images/*
 /CatGenerator/Results/Generated_Images/*
+/CatGenerator/Loss_Graph.png
