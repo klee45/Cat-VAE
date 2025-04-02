@@ -362,5 +362,5 @@ MigrationBackup/
 # Fody - auto-generated XML schema
 FodyWeavers.xsd
 /CatGenerator/Results/Autoencoder_Images/*
-/CatGenerator/Results/Generated_Images/*
+/CatGenerator/Results/Generator_Images/*
 /CatGenerator/Loss_Graph.png
