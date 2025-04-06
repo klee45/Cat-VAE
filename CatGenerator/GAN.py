@@ -8,6 +8,7 @@ import torchvision.transforms as tf
 import torchvision.utils as torchutils
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 opt = Utility.get_opt()
 
@@ -91,7 +92,7 @@ class Discriminator(nn.Module):
             nn.Flatten(),
             nn.Linear(size * compressed_size * compressed_size, 512, bias=False),
             nn.BatchNorm1d(512, momentum=0.9),
-            nn.ReLU(True),
+            nn.LeakyReLU(0.2, True),
             nn.Linear(512, 1, bias=False),
             nn.Sigmoid()
         )
@@ -100,9 +101,46 @@ class Discriminator(nn.Module):
         data = self.conv(input_data)
         data = self.end(data)
         return data
+
+def weights_init(m):
+    if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+        torch.nn.init.normal_(m.weight, 0.0, 0.02)
+    if isinstance(m, nn.BatchNorm2d):
+        torch.nn.init.normal_(m.weight, 0.0, 0.02)
+        torch.nn.init.constant_(m.bias, 0)
+    if isinstance(m, nn.Linear):
+        torch.nn.init.normal_(m.weight, 0.0, 0.02)
     
 def generate_noise(length, channels):
     return torch.cuda.FloatTensor(np.random.normal(0, 1, size=(length, channels)))
+        
+def get_gradient(discriminator, real, fake, epsilon):
+    mixed_images = real * epsilon + fake * (1 - epsilon)
+
+    mixed_scores = discriminator(mixed_images)
+    
+    gradient = torch.autograd.grad(
+        inputs=mixed_images,
+        outputs=mixed_scores,
+        grad_outputs=torch.ones_like(mixed_scores), 
+        create_graph=True,
+        retain_graph=True,
+        
+    )[0]
+    return gradient
+
+def gradient_penalty(gradient):
+    gradient = gradient.view(len(gradient), -1)
+    gradient_norm = gradient.norm(2, dim=1)
+    penalty = torch.mean((gradient_norm -1)**2)
+    return penalty
+
+def get_gen_loss(fake_pred):
+    return -torch.mean(fake_pred)
+
+def get_disc_loss(fake_pred, real_pred, grad_pen, c_lambda=10):
+    return torch.mean(fake_pred) - torch.mean(real_pred) + c_lambda * grad_pen
+
     
 def main():    
     print("Setup")
@@ -110,23 +148,30 @@ def main():
     # Neural net
     generator = Generator()
     discriminator = Discriminator()
+    
+    generator.apply(weights_init)
+    discriminator.apply(weights_init)
+            
+    # Load and freeze decoder
+    decoder = Autoencoder.Decoder()
+    decoder.load_state_dict(torch.load("Models/Decoder"))
+    for param in decoder.parameters():
+        param.requires_grad = False
         
-    # Use binary cross-entropy loss
-    adversarial_loss = torch.nn.BCELoss()
-
     if torch.cuda.is_available:
         generator.cuda()
         discriminator.cuda()
-        adversarial_loss.cuda()
+        decoder.cuda()
 
     print(generator)
     print(discriminator)
 
     # Optimizers
-    optimizer_generator = torch.optim.Adam(params=generator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
-    optimizer_discriminator = torch.optim.Adam(params=discriminator.parameters(), lr=opt.lr, betas=(opt.b1, opt.b2))
+    optimizer_generator = torch.optim.Adam(params=generator.parameters(), lr=opt.lr_g, betas=(opt.b1, opt.b2))
+    optimizer_discriminator = torch.optim.Adam(params=discriminator.parameters(), lr=opt.lr_d, betas=(opt.b1, opt.b2))
         
     # Training
+    g_losses = []
     d_losses = []
 
     # Create updating figure
@@ -134,8 +179,9 @@ def main():
     plt.title("Losses During Training")
     plt.xlabel("iterations")
     plt.ylabel("Loss")
-    plt.yscale("log")
-    plt.plot(d_losses,label="Discriminator",color="red")
+    #plt.yscale("log")
+    plt.plot(g_losses, label="Generator", color="green")
+    plt.plot(d_losses, label="Discriminator",color="red")
     plt.legend()
 
     # Data loading
@@ -149,18 +195,16 @@ def main():
                                     ]))
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers)
     
-    # Define NN
-    generator = Generator()
-    discriminator = Discriminator()
-    
-    # Load and freeze decoder
-    decoder = Autoencoder.Decoder()
-    decoder.load_state_dict(torch.load("Models/Decoder"))
-    for param in decoder.parameters():
-        param.requires_grad = False
+    start_epoch = 0
+    if os.path.isfile("Progress/epoch.txt"):
+        start_epoch = int(np.loadtxt("Progress/epoch.txt")) + 1
+        g_losses, d_losses = [x.tolist() for x in np.loadtxt("Progress/loss.csv", delimiter=",")]
+        generator.load_state_dict(torch.load("Models/Generator"))
+        discriminator.load_state_dict(torch.load("Models/Discriminator"))
+        
 
     print("Training")
-    for epoch in range(opt.num_epochs):
+    for epoch in range(start_epoch, opt.num_epochs_gan):
         for i, (imgs, _) in enumerate(dataloader):
             imgs = imgs.cuda()
             
@@ -177,34 +221,41 @@ def main():
             
             # Score both the real and fake images in the discriminator
             d_real_imgs = discriminator(imgs)
-            d_fake_imgs = discriminator(generated_images)
+            d_fake_imgs = discriminator(generated_images.detach())
 
             # Calculate loss
-            real_loss = adversarial_loss(d_real_imgs, valid)
-            fake_loss = adversarial_loss(d_fake_imgs, fake)
-            discriminator_loss = 0.5 * (real_loss + fake_loss)
-            d_losses.append(discriminator_loss.item())
-
-            c = d_real_imgs.detach().cpu().numpy()
-            d = d_fake_imgs.detach().cpu().numpy()
-
-            a = real_loss.item()
-            b = fake_loss.item()
+            epsilon = torch.rand(len(imgs), 1, 1, 1, device="cuda", requires_grad=True)
+            gradient = get_gradient(discriminator, imgs, generated_images.detach(), epsilon)
+            penalty = gradient_penalty(gradient)
             
+            # --------------- Discriminator ----------------------------
+            d_loss = get_disc_loss(d_fake_imgs.detach(), d_real_imgs, penalty)
+
             # Information for debugging
             d_num_real = np.round(d_real_imgs.detach().cpu().numpy())
             d_num_fake = np.round(d_fake_imgs.detach().cpu().numpy())
             d_percent_real_correct = 100 * np.sum(d_num_real) / len(d_num_real)
             d_percent_fake_correct = 100 * (len(d_num_fake) - np.sum(d_num_fake)) / len(d_num_fake)
 
-            discriminator_loss.backward()
-            optimizer_generator.step()
+            d_loss.backward()
+            d_losses.append(d_loss.item())
             optimizer_discriminator.step()
+            
+            # ------------------- Generator --------------------------
+            noise_2 = generate_noise(len(imgs), opt.generator_size)
+            generated_images_2 = decoder(generator(noise_2))
+            d_fake_imgs_2 = discriminator(generated_images)
+
+            g_loss = get_gen_loss(d_fake_imgs_2)
+            g_loss.backward()
+            g_losses.append(g_loss.item())
+            optimizer_generator.step()
 
             # ----------------------- Display results ------------------------
             print(
-                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs, i, len(dataloader)) +
-                "\n\t [Discriminator loss: %f]" % discriminator_loss.item() + 
+                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs_gan, i, len(dataloader)) +
+                "\n\t [Generator loss: %f]" % g_loss.item() + 
+                "\n\t [Discriminator loss: %f]" % d_loss.item() + 
                 "\n\t [percent correct r: %.2f | f: %.2f]" % (d_percent_real_correct, d_percent_fake_correct)
                 #d_percent_real_correct, d_percent_fake_correct)
             )
@@ -217,15 +268,22 @@ def main():
             # Plotting
             batch_num = epoch * len(dataloader) + i    
             if (batch_num + 1) % opt.plot_interval == 0:
-                plt.plot(d_losses,color="red")
+                plt.plot(g_losses, color="green")
+                plt.plot(d_losses, color="red")
                 plt.pause(1e-10)
+
+        # ----------------------- Save the model ---------------------------
+        torch.save(generator.state_dict(), "Models/Generator")
+        torch.save(discriminator.state_dict(), "Models/Discriminator")
+                
+        np.savetxt("Progress/loss.csv", [g_losses, d_losses], delimiter=",", fmt="%f")
+        np.savetxt("Progress/epoch.txt", [epoch], fmt="%d")
     
     print("Done")
-    torch.save(generator.state_dict(), "Models/Generator")
-    torch.save(discriminator.state_dict(), "Models/Discriminator")
-
+    os.remove("Progress/epoch.txt")
     plt.savefig("GAN_Loss_Graph")
     plt.show()
+        
 
 if __name__ == '__main__':
     main()
