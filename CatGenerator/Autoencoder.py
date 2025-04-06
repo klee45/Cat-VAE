@@ -153,8 +153,16 @@ def sample_images(mean, var, decoder):
     noise = generate_noise(len(mean))
     return decoder(noise * mean + var)
 
+def make_folder(path):
+    if not os.path.exists(path):
+        os.mkdir(path)
+
 def main():    
     print("Setup")
+
+    make_folder("Models")
+    make_folder("Progress")
+    make_folder("Results")
 
     # Data loading
     dataset = datasets.ImageFolder(root="Data/Full",
