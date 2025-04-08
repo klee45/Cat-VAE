@@ -138,20 +138,20 @@ def vae_gaussian_kl_loss(mu, logvar):
     return kld.mean()
         
 def reconstruction_loss(sampled, real):
-    bce_loss = nn.MSELoss(reduction="sum")
+    bce_loss = nn.MSELoss()
     return bce_loss(sampled, real)
 
 def vae_loss(mean, logvar, sampled, real):
     recon_loss = reconstruction_loss(sampled, real)
     kld_loss = vae_gaussian_kl_loss(mean, logvar)
-    return recon_loss + kld_loss * 0.002
+    return recon_loss, kld_loss
 
 def generate_noise(length):
     return torch.normal(0, 1, size=(length, opt.latent_size)).cuda()
 
-def sample_images(mean, var, decoder):
+def generate_latent(mean, var):
     noise = generate_noise(len(mean))
-    return decoder(noise * mean + var)
+    return mean + var * noise
 
 def make_folder(path):
     if not os.path.exists(path):
@@ -162,15 +162,17 @@ def main():
 
     make_folder("Models")
     make_folder("Progress")
-    make_folder("Results")
-
+    make_folder("Results/Autoencoder_Images")
+    make_folder("Results/Sampled_Images")
+    
     # Data loading
     dataset = datasets.ImageFolder(root="Data/Full",
                                     transform=tf.Compose([
+                                        tf.RandomResize(int(opt.image_size * 1.5), 3 * opt.image_size),
+                                        tf.RandomCrop(int(opt.image_size * 1.5)),
                                         tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
                                         tf.RandomRotation(15),
-                                        tf.RandomResize(opt.image_size, 2 * opt.image_size),
-                                        tf.RandomCrop(opt.image_size),
+                                        tf.CenterCrop(opt.image_size),
                                         tf.ToTensor(),
                                     ]))
     dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers, drop_last=True)
@@ -194,7 +196,8 @@ def main():
     print(decoder)
     
     # Training
-    v_losses = []
+    r_losses = []
+    k_losses = []
 
     # Create updating figure
     plt.figure(figsize=(10,5))
@@ -202,7 +205,8 @@ def main():
     plt.xlabel("iterations")
     plt.ylabel("Loss")
     plt.yscale("log")
-    plt.plot(v_losses,label="VAE",color="blue")
+    plt.plot(r_losses,label="Reconstruction", color="blue")
+    plt.plot(k_losses, label="KLD", color="red")
     plt.legend()
 
     # Optimizers
@@ -212,7 +216,7 @@ def main():
     start_epoch = 0
     if os.path.isfile("Progress/epoch.txt"):
         start_epoch = int(np.loadtxt("Progress/epoch.txt")) + 1
-        v_losses = [x.tolist() for x in np.loadtxt("Progress/loss.csv", delimiter=",")]
+        r_losses, k_losses = [x.tolist() for x in np.loadtxt("Progress/loss.csv", delimiter=",")]
         encoder.load_state_dict(torch.load("Models/Encoder"))
         decoder.load_state_dict(torch.load("Models/Decoder"))
 
@@ -229,12 +233,15 @@ def main():
 
             mean, logvar = encoder(imgs)
             var =  torch.exp(logvar * 0.5)
-            
-            decoded_images = sample_images(mean, var, decoder)
+            latent = generate_latent(mean, var)
 
-            v_loss = vae_loss(mean, logvar, decoded_images, imgs)
-            v_losses.append(v_loss.item())
-            
+            decoded_images = decoder(latent)
+
+            r_loss, k_loss = vae_loss(mean, logvar, decoded_images, imgs)
+            r_losses.append(r_loss.item())
+            k_losses.append(k_loss.item())
+
+            v_loss = r_loss + k_loss
             v_loss.backward()
             optimizer_encoder.step()
             optimizer_decoder.step()
@@ -242,12 +249,14 @@ def main():
 
             # ----------------------- Display results ------------------------
             print(
-                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs_autoencoder, i, len(dataloader)) +
-                "\n\t [VAE loss: %f]" % v_loss.item()
+                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs_autoencoder, i + 1, len(dataloader)) +
+                "\n\t [Reconstruction loss: %f]" % r_loss.item() +
+                "\n\t [KLD            loss: %f]" % k_loss.item() + 
+                "\n\t [Latent var, m: %f | %f]" % torch.var_mean(latent)
             )
 
-            # Get the second-last batch (to get a full batch)
-            if ((epoch + 1) % 5 == 0 and i == len(dataloader) - 2):
+            # Get the last batch
+            if ((epoch + 1) % 5 == 0 and i == len(dataloader) - 1):
                 # Generate images
                 noise = generate_noise(len(imgs))
                 sampled_images = decoder(noise)
@@ -260,14 +269,15 @@ def main():
             # Plotting
             batch_num = epoch * len(dataloader) + i    
             if (batch_num + 1) % opt.plot_interval == 0:
-                plt.plot(v_losses,color="blue")
+                plt.plot(r_losses, color="blue")
+                plt.plot(k_losses, color="red")
                 plt.pause(1e-10)
     
         # ----------------------- Save the model ---------------------------
         torch.save(encoder.state_dict(), "Models/Encoder")
         torch.save(decoder.state_dict(), "Models/Decoder")
                 
-        np.savetxt("Progress/loss.csv", [v_losses], delimiter=",", fmt="%f")
+        np.savetxt("Progress/loss.csv", [r_losses, k_losses], delimiter=",", fmt="%f")
         np.savetxt("Progress/epoch.txt", [epoch], fmt="%d")
     
 

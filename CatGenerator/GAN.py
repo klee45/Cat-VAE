@@ -253,7 +253,7 @@ def main():
 
             # ----------------------- Display results ------------------------
             print(
-                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs_gan, i, len(dataloader)) +
+                "[Epoch %d/%d] [Batch %d/%d]" % (epoch + 1, opt.num_epochs_gan, i + 1, len(dataloader)) +
                 "\n\t [Generator loss: %f]" % g_loss.item() + 
                 "\n\t [Discriminator loss: %f]" % d_loss.item() + 
                 "\n\t [percent correct r: %.2f | f: %.2f]" % (d_percent_real_correct, d_percent_fake_correct)
