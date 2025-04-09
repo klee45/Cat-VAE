@@ -366,6 +366,6 @@ FodyWeavers.xsd
 /CatGenerator/Results/Generator_Images/*
 /CatGenerator/Results/Sampled_Images/*
 /CatGenerator/Models/*
-/CatGenerator/*Loss_Graph.png
+/CatGenerator/Results/*Loss_Graph.png
 /CatGenerator/Progress/epoch.txt
 /CatGenerator/Progress/loss.csv

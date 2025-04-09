@@ -19,44 +19,44 @@ opt = Utility.get_opt()
 '''
 Encoder
     4x (Conv2d -> BatchNorm2d -> ReLU)
-        16 32 64 128 256
+        3 16 32 64 128
     Linear -> BatchNorm1d -> ReLU
-        xx latent
+        128 latent
     
 Decoder
     Linear -> BatchNorm1d -> ReLU
-        latent xx
+        latent 256
     4x (ConvTranspose2d -> BatchNorm2d -> ReLU)
         256 128 64 32 16
     Conv2d -> Tanh
         16 3
 
 real images -> Encoder -> Decoder -> autoencoded images
-noise -> Generator -> Decoder -> generated images
+noise -> Decoder -> generated images
 '''
 
-# Conv -> Batch norm -> ReLU
+# Conv -> ReLU -> Batch norm
 class Encoder_Block(nn.Module):
     def __init__(self, channel_in, channel_out, leaky=False):
        super(Encoder_Block, self).__init__()
        
        self.conv = nn.Sequential(
             nn.Conv2d(channel_in, channel_out, kernel_size=5, stride=2, padding=2, bias=False), 
-            nn.BatchNorm2d(channel_out, momentum=0.9),
-            nn.LeakyReLU(0.2, True) if leaky else nn.ReLU(True) 
+            nn.LeakyReLU(0.2, True) if leaky else nn.ReLU(True),
+            nn.BatchNorm2d(channel_out, momentum=0.9)
         )
     def forward(self, ten):
         return self.conv(ten)
 
-# Conv tranpose -> Batch norm -> ReLU
+# Conv tranpose -> ReLU-> Batch norm 
 class Decoder_Block(nn.Module):
     def __init__(self, channel_in, channel_out, leaky=False):
         super(Decoder_Block, self).__init__()
         
         self.conv = nn.Sequential(
             nn.ConvTranspose2d(channel_in, channel_out, kernel_size=5, stride=2, padding=2, output_padding=1, bias=False),
-            nn.BatchNorm2d(channel_out, momentum=0.9),
-            nn.LeakyReLU(0.2, True) if leaky else nn.ReLU(True) 
+            nn.LeakyReLU(0.2, True) if leaky else nn.ReLU(True),
+            nn.BatchNorm2d(channel_out, momentum=0.9)
         )
     def forward(self, ten):
         return self.conv(ten)
@@ -66,12 +66,12 @@ class Encoder(nn.Module):
         super(Encoder, self).__init__()
         
         layers_list = []
-        size = opt.min_feature_size * 2
+        size = opt.min_feature_size
         layers_list.append(Encoder_Block(opt.num_channels, size))
         for i in range(opt.num_autoencoder_layers - 1):
             layers_list.append(Encoder_Block(size, size * 2))
             size *= 2
-        assert size == opt.min_feature_size * 2**opt.num_autoencoder_layers
+        assert size == opt.min_feature_size * 2**(opt.num_autoencoder_layers - 1)
 
         layers_list.append(nn.Flatten())
         self.conv = nn.Sequential(*layers_list)
@@ -97,13 +97,13 @@ class Decoder(nn.Module):
         super(Decoder, self).__init__()
         
         # Unflatten latent vector
-        size = int(opt.min_feature_size * 2**opt.num_autoencoder_layers)
+        size = int(opt.min_feature_size * 2**(opt.num_autoencoder_layers))
         compressed_size = int(opt.image_size / 2**opt.num_autoencoder_layers)
         compressed_features = int(size * compressed_size * compressed_size)
         self.start = nn.Sequential(
             nn.Linear(opt.latent_size, compressed_features, bias=False),
-            nn.BatchNorm1d(compressed_features, momentum=0.9),
             nn.ReLU(True),
+            nn.BatchNorm1d(compressed_features, momentum=0.9),
             nn.Unflatten(1, (size, compressed_size, compressed_size))
         )
 
@@ -116,7 +116,7 @@ class Decoder(nn.Module):
         self.conv = nn.Sequential(*layers_list)
                  
         self.end = nn.Sequential(
-            nn.Conv2d(size, opt.num_channels, kernel_size=5, stride=1, padding=2),
+            nn.Conv2d(size, opt.num_channels, kernel_size=3, stride=1, padding=1),
             nn.Sigmoid()
         )
         
@@ -128,17 +128,17 @@ class Decoder(nn.Module):
     
 def weights_init(m):
     if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
-        torch.nn.init.normal_(m.weight, 0.0, 0.02)
+        nn.init.normal_(m.weight, 0.0, 0.02)
     if isinstance(m, nn.BatchNorm2d):
-        torch.nn.init.normal_(m.weight, 0.0, 0.02)
-        torch.nn.init.constant_(m.bias, 0)
+        nn.init.normal_(m.weight, 0.0, 0.02)
+        nn.init.constant_(m.bias, 0)
         
 def vae_gaussian_kl_loss(mu, logvar):
     kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
-    return kld.mean()
+    return kld.sum()
         
 def reconstruction_loss(sampled, real):
-    bce_loss = nn.MSELoss()
+    bce_loss = nn.MSELoss(reduction="sum")
     return bce_loss(sampled, real)
 
 def vae_loss(mean, logvar, sampled, real):
@@ -184,13 +184,9 @@ def main():
     encoder.apply(weights_init)
     decoder.apply(weights_init)
     
-    # Pixelwise loss for autoencoder
-    pixelwise_loss = torch.nn.L1Loss()
-    
     if torch.cuda.is_available:
         encoder.cuda()
         decoder.cuda()
-        pixelwise_loss.cuda()
 
     print(encoder)
     print(decoder)
@@ -204,7 +200,6 @@ def main():
     plt.title("Losses During Training")
     plt.xlabel("iterations")
     plt.ylabel("Loss")
-    plt.yscale("log")
     plt.plot(r_losses,label="Reconstruction", color="blue")
     plt.plot(k_losses, label="KLD", color="red")
     plt.legend()
@@ -213,6 +208,7 @@ def main():
     optimizer_encoder = torch.optim.Adam(params=encoder.parameters(), lr=opt.lr_a, betas=(opt.b1, opt.b2))
     optimizer_decoder = torch.optim.Adam(params=decoder.parameters(), lr=opt.lr_a, betas=(opt.b1, opt.b2))    
 
+    # Load progress if it exists
     start_epoch = 0
     if os.path.isfile("Progress/epoch.txt"):
         start_epoch = int(np.loadtxt("Progress/epoch.txt")) + 1
@@ -284,7 +280,7 @@ def main():
     print("Done")
     os.remove("Progress/epoch.txt")
 
-    plt.savefig("Autoencoder_Loss_Graph")
+    plt.savefig("Results/Autoencoder_Loss_Graph")
     plt.show()
 
 if __name__ == '__main__':
