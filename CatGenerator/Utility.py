@@ -13,7 +13,7 @@ def get_opt():
     parser.add_argument("--b1", type=float, default=0.5, help="adam: decay of first order momentum of gradient")
     parser.add_argument("--b2", type=float, default=0.999, help="adam: decay of first order momentum of gradient")
     parser.add_argument("--num_gpus", type=int, default=1, help="number of gpu threads to use")
-    parser.add_argument("--latent_size", type=int, default=512, help="size of the latent vector i.e. size of decoder input")
+    parser.add_argument("--latent_size", type=int, default=64, help="size of the latent vector i.e. size of decoder input")
     parser.add_argument("--generator_size", type=int, default=128, help="size of the noise vector for the generator")
     parser.add_argument("--num_channels", type=int, default=3, help="number of image channels")
     parser.add_argument("--sample_interval", type=int, default=100, help="interval between image sampling")
@@ -25,6 +25,7 @@ def get_opt():
     parser.add_argument("--num_generator_layers", type=int, default=4, help="number of dense layers in the generator")
     parser.add_argument("--num_discriminator_layers", type=int, default=4, help="number of conv layers in the discriminator")
     parser.add_argument("--min_feature_size", type=int, default=16, help="Smallest feature count for the conv layers (default 4)")
+    parser.add_argument("--test_generator", type=bool, default=True, help="Whether to run the handwriting dataset for testing")
     opt = parser.parse_args()
     return opt
 

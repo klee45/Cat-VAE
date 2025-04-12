@@ -13,6 +13,7 @@ import torchvision.transforms.v2 as tf
 import torchvision.utils as torchutils
 import numpy as np
 import matplotlib.pyplot as plt
+import torchvision
 
 opt = Utility.get_opt()
 
@@ -164,19 +165,30 @@ def main():
     make_folder("Progress")
     make_folder("Results/Autoencoder_Images")
     make_folder("Results/Sampled_Images")
-    
+
     # Data loading
-    dataset = datasets.ImageFolder(root="Data/Full",
-                                    transform=tf.Compose([
-                                        tf.RandomResize(int(opt.image_size * 1.5), 3 * opt.image_size),
-                                        tf.RandomCrop(int(opt.image_size * 1.5)),
-                                        tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
-                                        tf.RandomRotation(15),
-                                        tf.CenterCrop(opt.image_size),
-                                        tf.ToTensor(),
-                                    ]))
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers, drop_last=True)
-        
+    if (opt.test_generator):
+        dataloader= torch.utils.data.DataLoader(
+            torchvision.datasets.MNIST('/files/', train=True, download=True,
+                                       transform=tf.Compose([
+                                            tf.Resize(opt.image_size),
+                                            tf.ToTensor(),
+                                            tf.Normalize((0.1307,), (0.3081,))
+                                 ])),
+        batch_size=opt.batch_size, shuffle=True)
+         
+    else:
+       dataset = datasets.ImageFolder(root="Data/Full",
+                                        transform=tf.Compose([
+                                            tf.RandomResize(int(opt.image_size * 1.5), 3 * opt.image_size),
+                                            tf.RandomCrop(int(opt.image_size * 1.5)),
+                                            tf.RandomPerspective(distortion_scale=opt.persp1, p=opt.persp2),
+                                            tf.RandomRotation(15),
+                                            tf.CenterCrop(opt.image_size),
+                                            tf.ToTensor(),
+                                        ]))
+       dataloader = torch.utils.data.DataLoader(dataset, batch_size=opt.batch_size, shuffle=True, num_workers=opt.workers, drop_last=True)
+       
     # Neural net
     decoder = Decoder()
     encoder = Encoder()
