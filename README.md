@@ -16,9 +16,9 @@ Generates images of cats using a variational autoencoder.
 ## Handwriting Images
 ### Real and Autoencoded Images
 <p float="left">
-  <img src="/CatGenerator/Real_Image_Handwritten.png" width="500" />
-  <img src="/CatGenerator/Autoencoder_Image_Handwritten.png" width="500" /> 
+  <img src="/CatGenerator/Real_Image_Handwriting.png" width="500" />
+  <img src="/CatGenerator/Autoencoder_Image_Handwriting.png" width="500" /> 
 </p>
 
 ### Sampled Images
-<img src="/CatGenerator/Sampled_Image_Handwritten.png" width="500" />
+<img src="/CatGenerator/Sampled_Image_Handwriting.png" width="500" />
